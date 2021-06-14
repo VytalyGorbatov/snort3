@@ -1,6 +1,7 @@
 
 add_subdirectory(appid)
 add_subdirectory(arp_spoof)
+add_subdirectory(tcp_splicer)
 add_subdirectory(binder)
 add_subdirectory(normalize)
 add_subdirectory(packet_capture)
@@ -13,6 +14,7 @@ add_subdirectory(rna)
 if(STATIC_INSPECTORS)
     set(STATIC_INSPECTOR_OBJS
         $<TARGET_OBJECTS:arp_spoof>
+        $<TARGET_OBJECTS:tcp_splicer>
         $<TARGET_OBJECTS:packet_capture>
         $<TARGET_OBJECTS:perf_monitor>
     )

@@ -36,6 +36,7 @@ extern const BaseApi* nin_rna[];
 
 #ifdef STATIC_INSPECTORS
 extern const BaseApi* nin_arp_spoof[];
+extern const BaseApi* nin_tcp_splicer[];
 extern const BaseApi* nin_packet_capture[];
 extern const BaseApi* nin_perf_monitor[];
 #endif
@@ -57,6 +58,7 @@ void load_network_inspectors()
 
 #ifdef STATIC_INSPECTORS
     PluginManager::load_plugins(nin_arp_spoof);
+    PluginManager::load_plugins(nin_tcp_splicer);
     PluginManager::load_plugins(nin_packet_capture);
     PluginManager::load_plugins(nin_perf_monitor);
 #endif
