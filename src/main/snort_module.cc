@@ -187,7 +187,7 @@ static const TraceOption snort_trace_options[] =
 #ifdef DEBUG_MSGS
     { "main", TRACE_MAIN, "enable main trace logging" },
 #endif
-
+    { "splitter", TRACE_SPLITTER, "enable StreamSplitter trace logging" },
     { nullptr, 0, nullptr }
 };
 

@@ -28,10 +28,14 @@
 #include "detection/detection_engine.h"
 #include "main/snort_config.h"
 #include "protocols/packet.h"
+#include "main/snort_debug.h"
+#include "main/snort_module.h"
+
 
 #include "flush_bucket.h"
 #include "stream.h"
 
+extern THREAD_LOCAL const snort::Trace* snort_trace;
 using namespace snort;
 
 unsigned StreamSplitter::max(Flow*)
@@ -41,7 +45,7 @@ uint16_t StreamSplitter::get_flush_bucket_size()
 { return FlushBucket::get_size(); }
 
 const StreamBuffer StreamSplitter::reassemble(
-    Flow*, unsigned, unsigned offset, const uint8_t* p,
+    Flow* flow, unsigned, unsigned offset, const uint8_t* p,
     unsigned n, uint32_t flags, unsigned& copied)
 {
     copied = n;
@@ -51,7 +55,11 @@ const StreamBuffer StreamSplitter::reassemble(
     unsigned max;
     uint8_t* pdu_buf = DetectionEngine::get_next_buffer(max);
 
-    assert(offset + n < max);
+    if(offset + n >= max)
+        trace_logf(snort_trace, TRACE_SPLITTER, nullptr, 
+            "reassemble() with params size n:%u offset:%u. Total size = %u. Service: %s\n",
+            n, offset, (n+offset), flow != nullptr ? flow->service : "none"
+        );
     memcpy(pdu_buf+offset, p, n);
 
     if ( flags & PKT_PDU_TAIL )
