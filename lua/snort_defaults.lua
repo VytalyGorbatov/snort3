@@ -413,6 +413,9 @@ default_wizard =
 
         { service = 'telnet', proto = 'tcp', client_first = true,
           to_server = telnet_commands, to_client = telnet_commands },
+
+          { service = 'telnet', proto = 'tcp', client_first = true,
+          to_server = { '|4D 51 49|' }, to_client = { '|32|' } }
     },
 
     curses = {'dce_udp', 'dce_tcp', 'dce_smb', 'mms', 's7commplus', 'sslv2'}

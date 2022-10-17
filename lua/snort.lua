@@ -44,10 +44,17 @@ include 'snort_defaults.lua'
 stream = { }
 stream_ip = { }
 stream_icmp = { }
-stream_tcp = { }
+stream_tcp = { show_rebuilt_packets = true }
 stream_udp = { }
 stream_user = { }
 stream_file = { }
+
+-- trace = {
+--     modules = {
+--         stream = {all = 9},
+--         stream_tcp = {all = 9},
+--     }
+-- }
 
 arp_spoof = { }
 back_orifice = { }
@@ -117,7 +124,7 @@ reputation =
 ---------------------------------------------------------------------------
 
 wizard = default_wizard
-
+mqtt = { }
 binder =
 {
     -- port bindings required for protocols without wizard support
@@ -129,6 +136,7 @@ binder =
     { when = { proto = 'tcp', ports = '2404', role='server' }, use = { type = 'iec104' } },
     { when = { proto = 'udp', ports = '22222', role = 'server' }, use = { type = 'cip' } },
     { when = { proto = 'tcp', ports = '44818', role = 'server' }, use = { type = 'cip' } },
+    { when = { proto = 'tcp', ports = '1883', role = 'server' }, use = { type = 'mqtt' } },
 
     { when = { proto = 'tcp', service = 'dcerpc' },  use = { type = 'dce_tcp' } },
     { when = { proto = 'udp', service = 'dcerpc' },  use = { type = 'dce_udp' } },

@@ -11,6 +11,7 @@ add_subdirectory(http2_inspect)
 add_subdirectory(iec104)
 add_subdirectory(imap)
 add_subdirectory(mms)
+add_subdirectory(mqtt)
 add_subdirectory(modbus)
 add_subdirectory(netflow)
 add_subdirectory(pop)
@@ -34,6 +35,7 @@ if (STATIC_INSPECTORS)
         $<TARGET_OBJECTS:iec104>
         $<TARGET_OBJECTS:imap>
         $<TARGET_OBJECTS:mms>
+        $<TARGET_OBJECTS:mqtt>
         $<TARGET_OBJECTS:modbus>
         $<TARGET_OBJECTS:netflow>
         $<TARGET_OBJECTS:pop>
