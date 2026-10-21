@@ -30,8 +30,12 @@
 #include "config.h"
 #endif
 
+#include <algorithm>
+#include <cassert>
+
 #include "detection/detection_engine.h"
 #include "events/event.h"
+#include "flow/flow.h"
 #include "flow/flow_key.h"
 #include "framework/logger.h"
 #include "framework/module.h"
@@ -61,14 +65,27 @@ static THREAD_LOCAL TextLog* json_log;
 // field formatting functions
 //-------------------------------------------------------------------------
 
+class JsonLogger;
+
 namespace
 {
+struct BufferEntry
+{
+    std::string name;
+    std::string data;
+};
+
 struct Args
 {
     Packet* pkt;
     const char* msg;
     const Event& event;
     bool comma;
+    const JsonLogger* logger;
+    mutable bool buffers_collected = false;
+    mutable std::vector<BufferEntry> cached_buffers;
+    unsigned long buffers_depth = 0;
+    int buffers_opt = 0;
 };
 }
 
@@ -123,6 +140,130 @@ static bool ff_b64_data(const Args& a)
     if ( unsigned kout = b64.finish(out) )
         TextLog_Write(json_log, out, kout);
 
+    TextLog_Putc(json_log, '"');
+    return true;
+}
+
+static void escape_json_buffer(std::string& out, const char* data, size_t len)
+{
+    size_t start = 0;
+    for ( size_t i = 0; i < len; ++i )
+    {
+        uint8_t c = (uint8_t)data[i];
+        if ( c >= 0x20 && c <= 0x7E && c != '"' && c != '\\' )
+            continue;
+
+        if ( i > start )
+            out.append(data + start, i - start);
+
+        switch ( c )
+        {
+        case '"':  out.append("\\\""); break;
+        case '\\': out.append("\\\\"); break;
+        case '\b': out.append("\\b"); break;
+        case '\f': out.append("\\f"); break;
+        case '\n': out.append("\\n"); break;
+        case '\r': out.append("\\r"); break;
+        case '\t': out.append("\\t"); break;
+        default:
+            char hex[8];
+            snprintf(hex, sizeof(hex), "\\u%04x", c);
+            out.append(hex);
+            break;
+        }
+        start = i + 1;
+    }
+    if ( len > start )
+        out.append(data + start, len - start);
+}
+
+static void escape_json_buffer(TextLog* log, const char* data, size_t len)
+{
+    std::string s;
+    escape_json_buffer(s, data, len);
+    TextLog_Write(log, s.data(), s.size());
+}
+
+static void collect_buffers(const Args& a);
+
+#define BUFFER_SEPARATOR "\\30"
+
+static bool ff_buffer_names_common(const Args& a, const char* label)
+{
+    collect_buffers(a);
+    print_label(a, label);
+    TextLog_Putc(json_log, '"');
+
+    for ( const auto& b : a.cached_buffers )
+    {
+        escape_json_buffer(json_log, b.name.data(), b.name.size());
+        TextLog_Puts(json_log, BUFFER_SEPARATOR);
+    }
+
+    TextLog_Putc(json_log, '"');
+    return true;
+}
+
+static bool ff_buffer_names(const Args& a)
+{
+    return ff_buffer_names_common(a, "buffer_names");
+}
+
+static bool ff_buffers_names(const Args& a)
+{
+    return ff_buffer_names_common(a, "buffers_names");
+}
+
+static bool ff_buffers(const Args& a)
+{
+    collect_buffers(a);
+    print_label(a, "buffers");
+    TextLog_Putc(json_log, '"');
+
+    std::string out;
+    for ( const auto& b : a.cached_buffers )
+    {
+        escape_json_buffer(out, b.data.data(), b.data.size());
+        out.append(BUFFER_SEPARATOR);
+    }
+
+    size_t depth = a.buffers_depth;
+    if ( depth > 0 )
+    {
+        if ( out.size() < depth )
+        {
+            out.append(depth - out.size(), '0');
+        }
+        else if ( out.size() > depth )
+        {
+            out.resize(depth);
+            for ( size_t k = 1; k <= 5 && k <= out.size(); ++k )
+            {
+                if ( out[out.size() - k] == '\\' )
+                {
+                    if ( k == 1 || out[out.size() - k + 1] == 'u' )
+                    {
+                        size_t b = 0;
+                        while ( b + k < out.size() && out[out.size() - k - 1 - b] == '\\' )
+                            b++;
+                        if ( b % 2 == 0 )
+                        {
+                            for ( size_t j = out.size() - k; j < out.size(); ++j )
+                                out[j] = '0';
+                        }
+                    }
+                    break;
+                }
+            }
+            size_t backslashes = 0;
+            while ( backslashes < out.size() && out[out.size() - 1 - backslashes] == '\\' )
+                backslashes++;
+            if ( backslashes % 2 != 0 )
+                out.back() = '0';
+        }
+    }
+
+    TextLog_Write(json_log, out.data(), out.size());
     TextLog_Putc(json_log, '"');
     return true;
 }
@@ -672,7 +813,8 @@ typedef bool (*JsonFunc)(const Args&);
 
 static const JsonFunc json_func[] =
 {
-    ff_action, ff_class, ff_b64_data, ff_client_bytes, ff_client_pkts, ff_dir,
+    ff_action, ff_class, ff_b64_data, ff_buffer_names, ff_buffers, ff_buffers_names,
+    ff_client_bytes, ff_client_pkts, ff_dir,
     ff_dst_addr, ff_dst_ap, ff_dst_port, ff_eth_dst, ff_eth_len, ff_eth_src,
     ff_eth_type, ff_flowstart_time, ff_geneve_vni, ff_gid, ff_icmp_code, ff_icmp_id, ff_icmp_seq,
     ff_icmp_type, ff_iface, ff_ip_id, ff_ip_len, ff_msg, ff_mpls, ff_pkt_gen, ff_pkt_len,
@@ -683,7 +825,7 @@ static const JsonFunc json_func[] =
 };
 
 #define json_range \
-    "action | class | b64_data | client_bytes | client_pkts | dir | " \
+    "action | class | b64_data | buffer_names | buffers | buffers_names | client_bytes | client_pkts | dir | " \
     "dst_addr | dst_ap | dst_port | eth_dst | eth_len | eth_src | " \
     "eth_type | flowstart_time | geneve_vni | gid | icmp_code | icmp_id | icmp_seq | " \
     "icmp_type | iface | ip_id | ip_len | msg | mpls | pkt_gen | pkt_len | " \
@@ -695,6 +837,18 @@ static const JsonFunc json_func[] =
 #define json_deflt \
     "timestamp pkt_num proto pkt_gen pkt_len dir src_ap dst_ap rule action"
 
+//-------------------------------------------------------------------------
+// translation stuff
+//-------------------------------------------------------------------------
+
+enum BuffersToOutput
+{
+    BUFFERS_NONE = 0,
+    BUFFERS_RULE,
+    BUFFERS_INSPECTOR,
+    BUFFERS_BOTH,
+};
+
 static const Parameter s_params[] =
 {
     { "file", Parameter::PT_BOOL, nullptr, "false",
@@ -702,6 +856,12 @@ static const Parameter s_params[] =
 
     { "fields", Parameter::PT_MULTI, json_range, json_deflt,
       "selected fields will be output in given order left to right" },
+
+    { "buffers", Parameter::PT_ENUM, "none | rule | inspector | both", "both",
+      "output IPS buffer dump (evaluated by IPS rule or an inspector)" },
+
+    { "buffers_depth", Parameter::PT_INT, "0:maxSZ", "0",
+      "number of IPS buffer bytes to dump per buffer (0 is unlimited)" },
 
     { "limit", Parameter::PT_INT, "0:maxSZ", "0",
       "set maximum size in MB before rollover (0 is unlimited)" },
@@ -731,6 +891,8 @@ public:
     size_t limit = 0;
     string sep;
     vector<JsonFunc> fields;
+    size_t buffers_depth = 0;
+    int buffers_opt = BUFFERS_BOTH;
 };
 
 bool JsonModule::set(const char*, Value& v, SnortConfig*)
@@ -752,8 +914,14 @@ bool JsonModule::set(const char*, Value& v, SnortConfig*)
         }
     }
 
+    else if ( v.is("buffers") )
+        buffers_opt = v.get_uint8();
+
     else if ( v.is("limit") )
         limit = v.get_size() * 1024 * 1024;
+
+    else if ( v.is("buffers_depth") )
+        buffers_depth = v.get_size();
 
     else if ( v.is("separator") )
         sep = v.get_string();
@@ -766,6 +934,8 @@ bool JsonModule::begin(const char*, int, SnortConfig*)
     file = false;
     limit = 0;
     sep = ", ";
+    buffers_opt = BUFFERS_BOTH;
+    buffers_depth = 0;
 
     if ( fields.empty() )
     {
@@ -802,9 +972,13 @@ public:
     unsigned long limit;
     vector<JsonFunc> fields;
     string sep;
+    unsigned long buffers_depth;
+    int buffers_opt;
 };
 
-JsonLogger::JsonLogger(JsonModule* m) : file(m->file ? F_NAME : "stdout"), limit(m->limit), fields(std::move(m->fields)), sep(m->sep)
+JsonLogger::JsonLogger(JsonModule* m) : file(m->file ? F_NAME : "stdout"), limit(m->limit),
+    fields(std::move(m->fields)), sep(m->sep), buffers_depth(m->buffers_depth),
+    buffers_opt(m->buffers_opt)
 { }
 
 void JsonLogger::open()
@@ -820,7 +994,7 @@ void JsonLogger::close()
 
 void JsonLogger::alert(Packet* p, const char* msg, const Event& event)
 {
-    Args a = { p, msg, event, false };
+    Args a = { p, msg, event, false, this, false, {}, buffers_depth, buffers_opt };
     TextLog_Putc(json_log, '{');
 
     for ( JsonFunc f : fields )
@@ -831,6 +1005,126 @@ void JsonLogger::alert(Packet* p, const char* msg, const Event& event)
 
     TextLog_Print(json_log, " }\n");
     TextLog_Flush(json_log);
+}
+
+//-------------------------------------------------------------------------
+// buffer collection helpers
+//-------------------------------------------------------------------------
+
+static bool should_dump_buffer(const char* buf_name, const char** buffs_to_dump)
+{
+    if ( !buf_name or !buffs_to_dump )
+        return false;
+
+    size_t cmp_idx = 0;
+
+    while ( buffs_to_dump[cmp_idx] )
+        if ( !strcmp(buf_name, buffs_to_dump[cmp_idx++]) )
+            return true;
+
+    return false;
+}
+
+static void add_buffer(std::vector<BufferEntry>& list, const char* buf_name, const char* data, size_t len)
+{
+    if ( !buf_name or !buf_name[0] or !data )
+        return;
+
+    std::string buf_data(data, len);
+
+    auto it = std::find_if(list.begin(), list.end(), [buf_name](const BufferEntry& e) {
+        return e.name == buf_name;
+    });
+
+    if ( it != list.end() )
+    {
+        if ( it->data == buf_data )
+            return;
+        if ( buf_data.size() > it->data.size() && buf_data.find(it->data) != std::string::npos )
+        {
+            it->data = std::move(buf_data);
+            return;
+        }
+        if ( it->data.find(buf_data) != std::string::npos )
+            return;
+    }
+
+    list.push_back({ buf_name, std::move(buf_data) });
+}
+
+static void collect_buffers(const Args& a)
+{
+    if ( a.buffers_collected )
+        return;
+    a.buffers_collected = true;
+
+    Packet* p = a.pkt;
+    if ( !p )
+        return;
+
+    int opt = a.buffers_opt;
+    unsigned long depth = a.buffers_depth;
+
+    if ( opt == BUFFERS_NONE )
+        return;
+
+    bool do_rule = (opt == BUFFERS_RULE || opt == BUFFERS_BOTH || opt == -1);
+    bool do_insp = (opt == BUFFERS_INSPECTOR || opt == BUFFERS_BOTH || opt == -1);
+
+    if ( do_rule and p->context )
+    {
+        const char** buffs_to_dump = a.event.get_buffers();
+        if ( buffs_to_dump and buffs_to_dump[0] )
+        {
+            auto& all_buffs = p->context->matched_buffers;
+            std::vector<MatchedBuffer*> to_dump;
+
+            for ( auto& b : all_buffs )
+            {
+                if ( should_dump_buffer(b.name, buffs_to_dump) and to_dump.cend() ==
+                    find_if(to_dump.begin(), to_dump.end(), [b](MatchedBuffer*& cmp_b)
+                    {
+                        bool same_buffers = cmp_b->name == b.name and cmp_b->data == b.data;
+                        if ( same_buffers and cmp_b->size < b.size )
+                        {
+                            cmp_b->size = b.size;
+                            return true;
+                        }
+                        return same_buffers;
+                    }) )
+                    to_dump.push_back(&b);
+            }
+
+            for ( auto b : to_dump )
+            {
+                const char* buf_name = b->name;
+                if ( !buf_name or !b->data )
+                    continue;
+
+                size_t log_depth = depth && depth < b->size ? depth : b->size;
+                add_buffer(a.cached_buffers, buf_name, (const char*)b->data, log_depth);
+            }
+        }
+    }
+
+    if ( do_insp and p->flow and p->flow->gadget )
+    {
+        Inspector* gadget = p->flow->gadget;
+        const char** buffers = gadget->get_api()->buffers;
+
+        if ( buffers )
+        {
+            for ( ; *buffers; buffers++ )
+            {
+                InspectionBuffer buf;
+                if ( gadget->get_buf(*buffers, p, buf) and buf.data and buf.len > 0 )
+                {
+                    size_t log_depth = depth && depth < buf.len ? depth : buf.len;
+                    add_buffer(a.cached_buffers, *buffers, (const char*)buf.data, log_depth);
+                }
+            }
+        }
+    }
 }
 
 //-------------------------------------------------------------------------

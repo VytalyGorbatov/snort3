@@ -1,0 +1,2 @@
+{"pkt":5,"model":"A","status":"NEAR_MISS","group":"http|ref:cve-2021-44228","tier":1,"fp_sids":["1:58742"],"buffer":"http_header","len":145,"dir":"c2s","score":0.91}
+{"pkt":5,"model":"B","status":"NEAR_MISS","group":"http|http_client_body|web-application-attack","tier":2,"fp_sids":["1:51620","1:51621"],"buffer":"http_client_body","len":37,"dir":"c2s","score":0.42}

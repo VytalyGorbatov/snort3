@@ -415,6 +415,9 @@ static void rule_tree_match(
         else
             pmqs.non_qualified_events++;
 
+        if ( rule_group_eval_enabled && context )
+            context->rule_group_scratch.push_back({ root, pmx->pmd, eval_data.leaf_reached });
+
         if (eval_data.flowbit_failed)
             return;
     }
@@ -1340,6 +1343,27 @@ void fp_complete(Packet* p, bool search)
         print_pkt_info(p, "non-fast-patterns");
         fpEvalPacket(p, FPTask::NON_FP);
         fpFinalSelectEvent(c->otnx, p);
+        if ( rule_group_eval_enabled && !c->rule_group_scratch.empty() )
+        {
+            std::vector<std::pair<uint32_t, uint32_t>> matched_sids;
+            if ( c->otnx && c->otnx->have_match )
+            {
+                const SnortConfig* sc = SnortConfig::get_conf();
+                for ( unsigned i = 0; i < sc->num_rule_types; i++ )
+                {
+                    MatchInfo* pmi = &c->otnx->matchInfo[i];
+                    for ( unsigned j = 0; j < pmi->iMatchCount; j++ )
+                    {
+                        const OptTreeNode* otn = pmi->MatchArray[j];
+                        if ( otn )
+                            matched_sids.push_back({ otn->sigInfo.gid, otn->sigInfo.sid });
+                    }
+                }
+            }
+            RuleGroupEvalEvent ev(p, c->rule_group_scratch, matched_sids);
+            DataBus::publish(DetectionEngine::get_pub_id(), DetectionEventIds::RULE_GROUP_EVAL, ev, p->flow);
+            c->rule_group_scratch.clear();
+        }
         c->searches.items.clear();
     }
 }

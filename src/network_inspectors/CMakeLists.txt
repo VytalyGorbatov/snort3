@@ -14,6 +14,7 @@ add_subdirectory(perf_monitor)
 add_subdirectory(port_scan)
 add_subdirectory(reputation)
 add_subdirectory(rna)
+add_subdirectory(neural_risk)
 
 if(STATIC_INSPECTORS)
     set(STATIC_INSPECTOR_OBJS
@@ -33,6 +34,7 @@ set(STATIC_NETWORK_INSPECTOR_PLUGINS
     $<TARGET_OBJECTS:appid>
     $<TARGET_OBJECTS:binder>
     $<TARGET_OBJECTS:extractor>
+    $<TARGET_OBJECTS:neural_risk>
     ${SNORT_ML_STATIC_OBJ}
     $<TARGET_OBJECTS:normalize>
     $<TARGET_OBJECTS:port_scan>

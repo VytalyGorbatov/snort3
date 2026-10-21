@@ -28,6 +28,7 @@
 #include <list>
 
 #include "detection/detection_buf.h"
+#include "pub_sub/detection_events.h"
 #include "framework/codec.h"
 #include "framework/mpse.h"
 #include "framework/mpse_batch.h"
@@ -177,6 +178,7 @@ public:
     static constexpr unsigned max_ips_id = 8;
 
     std::vector<MatchedBuffer> matched_buffers;
+    std::vector<RuleGroupEvalRecord> rule_group_scratch;
 
 private:
     FlowSnapshot flow = {};

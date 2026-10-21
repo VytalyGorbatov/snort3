@@ -85,3 +85,6 @@ const std::string& IpsQueuingEvent::get_stripped_msg() const
 
     return stripped_msg;
 }
+
+bool snort::rule_group_eval_enabled = false;
+

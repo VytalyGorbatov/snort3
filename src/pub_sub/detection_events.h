@@ -24,6 +24,9 @@
 #include "framework/data_bus.h"
 #include "protocols/packet.h"
 
+struct detection_option_tree_root_t;
+struct PatternMatchData;
+
 namespace snort
 {
 
@@ -34,11 +37,33 @@ struct DetectionEventIds
         IPS_LOGGING,     // before IPS loggers invoked
         CONTEXT_LOGGING, // in an IPS logger
         BUILTIN,         // built-in event added in the event queue
+        RULE_GROUP_EVAL, // fast-pattern and rule evaluations for neural risk
         MAX
     };
 };
 
 const PubKey de_pub_key { "detection", DetectionEventIds::MAX };
+
+SO_PUBLIC extern bool rule_group_eval_enabled;
+
+struct RuleGroupEvalRecord
+{
+    const detection_option_tree_root_t* root;
+    const PatternMatchData* pmd;
+    bool leaf_reached;
+};
+
+class RuleGroupEvalEvent : public DataEvent
+{
+public:
+    RuleGroupEvalEvent(Packet* p, const std::vector<RuleGroupEvalRecord>& recs,
+                       const std::vector<std::pair<uint32_t, uint32_t>>& ms)
+        : packet(p), records(recs), matched_sids(ms) {}
+
+    Packet* packet;
+    const std::vector<RuleGroupEvalRecord>& records;
+    const std::vector<std::pair<uint32_t, uint32_t>>& matched_sids;
+};
 
 class IpsRuleEvent : public DataEvent, public Event
 {

@@ -801,8 +801,7 @@ void parse_rule_type(SnortConfig* sc, const char* s, RuleTreeNode& rtn)
     else
         action_file_id = false;
 
-    if ( sc->dump_rule_meta() )
-        rtn.header = new RuleHeader(s);
+    rtn.header = new RuleHeader(s);
 
     rtn.listhead = get_rule_list(sc, s);
 

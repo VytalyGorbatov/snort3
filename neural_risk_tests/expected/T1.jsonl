@@ -1,0 +1,1 @@
+{"pkt":5,"model":"A","status":"ALERT","group":"http|ref:cve-2021-44228","tier":1,"alert_sids":["1:58723","1:58737","1:58742"]}

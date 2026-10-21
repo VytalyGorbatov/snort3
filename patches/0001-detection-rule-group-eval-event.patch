@@ -1,0 +1,161 @@
+diff --git a/src/detection/fp_detect.cc b/src/detection/fp_detect.cc
+index b95c88fbe..b94a110ec 100644
+--- a/src/detection/fp_detect.cc
++++ b/src/detection/fp_detect.cc
+@@ -415,6 +415,9 @@ static void rule_tree_match(
+         else
+             pmqs.non_qualified_events++;
+ 
++        if ( rule_group_eval_enabled && context )
++            context->rule_group_scratch.push_back({ root, pmx->pmd, eval_data.leaf_reached });
++
+         if (eval_data.flowbit_failed)
+             return;
+     }
+@@ -1340,6 +1343,27 @@ void fp_complete(Packet* p, bool search)
+         print_pkt_info(p, "non-fast-patterns");
+         fpEvalPacket(p, FPTask::NON_FP);
+         fpFinalSelectEvent(c->otnx, p);
++        if ( rule_group_eval_enabled && !c->rule_group_scratch.empty() )
++        {
++            std::vector<std::pair<uint32_t, uint32_t>> matched_sids;
++            if ( c->otnx && c->otnx->have_match )
++            {
++                const SnortConfig* sc = SnortConfig::get_conf();
++                for ( unsigned i = 0; i < sc->num_rule_types; i++ )
++                {
++                    MatchInfo* pmi = &c->otnx->matchInfo[i];
++                    for ( unsigned j = 0; j < pmi->iMatchCount; j++ )
++                    {
++                        const OptTreeNode* otn = pmi->MatchArray[j];
++                        if ( otn )
++                            matched_sids.push_back({ otn->sigInfo.gid, otn->sigInfo.sid });
++                    }
++                }
++            }
++            RuleGroupEvalEvent ev(p, c->rule_group_scratch, matched_sids);
++            DataBus::publish(DetectionEngine::get_pub_id(), DetectionEventIds::RULE_GROUP_EVAL, ev, p->flow);
++            c->rule_group_scratch.clear();
++        }
+         c->searches.items.clear();
+     }
+ }
+diff --git a/src/detection/ips_context.cc b/src/detection/ips_context.cc
+index 7b9ebcad0..b43acc191 100644
+--- a/src/detection/ips_context.cc
++++ b/src/detection/ips_context.cc
+@@ -115,6 +115,7 @@ void IpsContext::clear()
+     remove_gadget = false;
+     assert(post_callbacks.empty());
+     matched_buffers.clear();
++    rule_group_scratch.clear();
+ }
+ 
+ void IpsContext::set_context_data(unsigned id, IpsContextData* cd)
+diff --git a/src/detection/ips_context.h b/src/detection/ips_context.h
+index 5d2822a59..abf23d734 100644
+--- a/src/detection/ips_context.h
++++ b/src/detection/ips_context.h
+@@ -28,6 +28,7 @@
+ #include <list>
+ 
+ #include "detection/detection_buf.h"
++#include "pub_sub/detection_events.h"
+ #include "framework/codec.h"
+ #include "framework/mpse.h"
+ #include "framework/mpse_batch.h"
+@@ -177,6 +178,7 @@ public:
+     static constexpr unsigned max_ips_id = 8;
+ 
+     std::vector<MatchedBuffer> matched_buffers;
++    std::vector<RuleGroupEvalRecord> rule_group_scratch;
+ 
+ private:
+     FlowSnapshot flow = {};
+diff --git a/src/detection/signature.cc b/src/detection/signature.cc
+index 07b06f62e..c2b3ee06d 100644
+--- a/src/detection/signature.cc
++++ b/src/detection/signature.cc
+@@ -81,8 +81,6 @@ void add_reference(
+ {
+     assert(sc and otn and !system.empty() and !id.empty());
+ 
+-    if ( !sc->alert_refs() )
+-        return;
+ 
+     const ReferenceSystem* sys = reference_system_lookup(sc, system);
+ 
+diff --git a/src/parser/parse_rule.cc b/src/parser/parse_rule.cc
+index a5046a9da..517d6ed4d 100644
+--- a/src/parser/parse_rule.cc
++++ b/src/parser/parse_rule.cc
+@@ -801,8 +801,7 @@ void parse_rule_type(SnortConfig* sc, const char* s, RuleTreeNode& rtn)
+     else
+         action_file_id = false;
+ 
+-    if ( sc->dump_rule_meta() )
+-        rtn.header = new RuleHeader(s);
++    rtn.header = new RuleHeader(s);
+ 
+     rtn.listhead = get_rule_list(sc, s);
+ 
+diff --git a/src/pub_sub/detection_events.cc b/src/pub_sub/detection_events.cc
+index f5e2ead9c..507af362a 100644
+--- a/src/pub_sub/detection_events.cc
++++ b/src/pub_sub/detection_events.cc
+@@ -85,3 +85,6 @@ const std::string& IpsQueuingEvent::get_stripped_msg() const
+ 
+     return stripped_msg;
+ }
++
++bool snort::rule_group_eval_enabled = false;
++
+diff --git a/src/pub_sub/detection_events.h b/src/pub_sub/detection_events.h
+index ec9a74537..2dc0acaa8 100644
+--- a/src/pub_sub/detection_events.h
++++ b/src/pub_sub/detection_events.h
+@@ -24,6 +24,9 @@
+ #include "framework/data_bus.h"
+ #include "protocols/packet.h"
+ 
++struct detection_option_tree_root_t;
++struct PatternMatchData;
++
+ namespace snort
+ {
+ 
+@@ -34,12 +37,34 @@ struct DetectionEventIds
+         IPS_LOGGING,     // before IPS loggers invoked
+         CONTEXT_LOGGING, // in an IPS logger
+         BUILTIN,         // built-in event added in the event queue
++        RULE_GROUP_EVAL, // fast-pattern and rule evaluations for neural risk
+         MAX
+     };
+ };
+ 
+ const PubKey de_pub_key { "detection", DetectionEventIds::MAX };
+ 
++SO_PUBLIC extern bool rule_group_eval_enabled;
++
++struct RuleGroupEvalRecord
++{
++    const detection_option_tree_root_t* root;
++    const PatternMatchData* pmd;
++    bool leaf_reached;
++};
++
++class RuleGroupEvalEvent : public DataEvent
++{
++public:
++    RuleGroupEvalEvent(Packet* p, const std::vector<RuleGroupEvalRecord>& recs,
++                       const std::vector<std::pair<uint32_t, uint32_t>>& ms)
++        : packet(p), records(recs), matched_sids(ms) {}
++
++    Packet* packet;
++    const std::vector<RuleGroupEvalRecord>& records;
++    const std::vector<std::pair<uint32_t, uint32_t>>& matched_sids;
++};
++
+ class IpsRuleEvent : public DataEvent, public Event
+ {
+ public:

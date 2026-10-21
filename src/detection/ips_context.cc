@@ -115,6 +115,7 @@ void IpsContext::clear()
     remove_gadget = false;
     assert(post_callbacks.empty());
     matched_buffers.clear();
+    rule_group_scratch.clear();
 }
 
 void IpsContext::set_context_data(unsigned id, IpsContextData* cd)

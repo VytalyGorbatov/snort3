@@ -1,0 +1,1 @@
+{"pkt":5,"model":"B","status":"NEAR_MISS","group":"http|http_client_body|web-application-attack","tier":2,"fp_sids":["1:51620","1:51621"],"buffer":"http_client_body","len":37,"dir":"c2s","score":0.42}

@@ -41,6 +41,9 @@ extern const BaseApi* nin_snort_ml[];
 extern const BaseApi* nin_port_scan[];
 extern const BaseApi* nin_rna[];
 
+extern const BaseApi* nin_neural_risk_engine[];
+extern const BaseApi* nin_neural_risk[];
+
 #ifdef STATIC_INSPECTORS
 extern const BaseApi* nin_arp_spoof[];
 extern const BaseApi* nin_packet_capture[];
@@ -68,6 +71,8 @@ void load_network_inspectors()
 
     PluginManager::load_plugins(nin_port_scan);
     PluginManager::load_plugins(nin_rna);
+    PluginManager::load_plugins(nin_neural_risk_engine);
+    PluginManager::load_plugins(nin_neural_risk);
 
 #ifdef STATIC_INSPECTORS
     PluginManager::load_plugins(nin_arp_spoof);

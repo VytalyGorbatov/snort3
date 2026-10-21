@@ -1,0 +1,1 @@
+{"pkt":5,"model":"C","status":"NEAR_MISS","group":"http|http_uri|web-application-activity","tier":2,"fp_sids":["1:2142"],"buffer":"http_uri","len":24,"dir":"c2s","score":0.10}
