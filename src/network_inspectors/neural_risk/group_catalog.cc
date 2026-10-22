@@ -27,6 +27,7 @@
 #include "target_based/snort_protocols.h"
 #include "ips_options/ips_flowbits.h"
 #include "framework/ips_option.h"
+#include "ports/port_object.h"
 
 using namespace snort;
 using namespace neural_risk;
@@ -232,13 +233,10 @@ bool GroupCatalog::build(const SnortConfig* sc,
                          unsigned min_size,
                          unsigned max_size)
 {
-    rules.clear();
-    groups.clear();
-    sid_to_group.clear();
-    sid_to_rule.clear();
-
     if (!sc || !sc->otn_map)
         return false;
+
+    std::vector<RuleFeatures> extracted_rules;
 
     // 1. Walk sc->otn_map and extract RuleFeatures
     GHashNode* ghn = sc->otn_map->find_first();
@@ -347,13 +345,21 @@ bool GroupCatalog::build(const SnortConfig* sc,
 
         // Port bucket
         rf.port_bucket = "other";
-        if (rtn && rtn->header)
+        if (rtn)
         {
-            const std::string& dp = rtn->header->dst_ports;
-            if (dp == "80" || dp == "443" || dp == "$HTTP_PORTS")
-                rf.port_bucket = "web";
-            else if (dp == "any" || dp.empty())
+            if (rtn->any_dst_port())
                 rf.port_bucket = "any";
+            else if (rtn->dst_portobject &&
+                     (PortObjectHasPort(rtn->dst_portobject, 80) || PortObjectHasPort(rtn->dst_portobject, 443)))
+                rf.port_bucket = "web";
+            else if (rtn->header)
+            {
+                const std::string& dp = rtn->header->dst_ports;
+                if (dp == "80" || dp == "443" || dp == "$HTTP_PORTS")
+                    rf.port_bucket = "web";
+                else if (dp == "any" || dp.empty())
+                    rf.port_bucket = "any";
+            }
         }
 
         // Flow direction
@@ -455,9 +461,22 @@ bool GroupCatalog::build(const SnortConfig* sc,
             }
         }
 
-        rules.push_back(std::move(rf));
+        extracted_rules.push_back(std::move(rf));
         ghn = sc->otn_map->find_next();
     }
+
+    return build_from_rules(std::move(extracted_rules), hub_limit, min_size, max_size);
+}
+
+bool GroupCatalog::build_from_rules(std::vector<RuleFeatures>&& rules_in,
+                                    unsigned hub_limit,
+                                    unsigned min_size,
+                                    unsigned max_size)
+{
+    rules = std::move(rules_in);
+    groups.clear();
+    sid_to_group.clear();
+    sid_to_rule.clear();
 
     if (rules.empty())
         return true;
@@ -474,14 +493,21 @@ bool GroupCatalog::build(const SnortConfig* sc,
             link_fanout[l]++;
     }
 
-    std::unordered_map<std::string, int> link_to_idx;
-    int link_counter = 0;
+    // Deterministic sorting of link keys before indexing (prevents unordered_map iteration variance)
+    std::vector<std::string> sorted_links;
+    sorted_links.reserve(link_fanout.size());
     for (const auto& kv : link_fanout)
     {
         if (kv.second <= hub_limit)
-        {
-            link_to_idx[kv.first] = link_counter++;
-        }
+            sorted_links.push_back(kv.first);
+    }
+    std::sort(sorted_links.begin(), sorted_links.end());
+
+    std::unordered_map<std::string, int> link_to_idx;
+    int link_counter = 0;
+    for (const auto& l : sorted_links)
+    {
+        link_to_idx[l] = link_counter++;
     }
 
     size_t num_rules = rules.size();

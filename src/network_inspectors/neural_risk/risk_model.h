@@ -14,6 +14,12 @@
 #include <memory>
 #include <cstdint>
 
+namespace snort
+{
+class Packet;
+class Flow;
+}
+
 namespace neural_risk
 {
 
@@ -24,10 +30,14 @@ struct ScoreRequest
     const GroupInfo* group = nullptr;
     uint32_t gid = 0;
     uint32_t sid = 0;
+    const std::vector<std::pair<uint32_t, uint32_t>>* sids = nullptr;
     std::string buffer_name;
     const uint8_t* buffer_data = nullptr;
     size_t buffer_len = 0;
     std::string dir;
+    int fpr_budget = 5;
+    const snort::Packet* packet = nullptr;
+    const snort::Flow* flow = nullptr;
 };
 
 struct RiskResult
@@ -56,7 +66,8 @@ public:
 
     RiskResult score(const ScoreRequest&) override
     {
-        return { fixed_score, false };
+        bool alert = (fixed_score >= 0.5f);
+        return { fixed_score, alert };
     }
 
 private:

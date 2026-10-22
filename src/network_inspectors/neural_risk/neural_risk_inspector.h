@@ -59,13 +59,15 @@ public:
     const PegInfo* get_pegs() const override;
     PegCount* get_counts() const override;
 
-    Usage get_usage() const override { return INSPECT; }
+    Usage get_usage() const override { return GLOBAL; }
 
     const NeuralRiskConfig& get_conf() const { return conf; }
 
 private:
     NeuralRiskConfig conf;
 };
+
+class NeuralRiskEngine;
 
 class NeuralRiskInspector : public snort::Inspector
 {
@@ -78,9 +80,11 @@ public:
     void eval(snort::Packet*) override {}
 
     const NeuralRiskConfig& get_config() const { return config; }
+    NeuralRiskEngine* get_engine() const { return engine; }
 
 private:
     NeuralRiskConfig config;
+    NeuralRiskEngine* engine = nullptr;
 };
 
 } // namespace neural_risk

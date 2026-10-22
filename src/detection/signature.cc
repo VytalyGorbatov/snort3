@@ -81,6 +81,8 @@ void add_reference(
 {
     assert(sc and otn and !system.empty() and !id.empty());
 
+    if ( !sc->alert_refs() )
+        return;
 
     const ReferenceSystem* sys = reference_system_lookup(sc, system);
 

@@ -1,7 +1,8 @@
 #!/bin/bash
 # ==============================================================================
-# Neural Risk Integration Test Harness (Phase 5)
+# Neural Risk Integration Test Harness (Phases 0–5)
 # Tests:
+#   0. Unit tests: GroupCatalog, UnionFind, Determinism, Classtype matching, JSON
 #   1. Golden diff: T1..T7 against expected/T*.jsonl
 #   2. Binding-swap diff: rerun with test_swap.lua (proves config-driven routing)
 #   3. Disabled test: test_disabled.lua emits 0 lines
@@ -11,17 +12,16 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SNORT_DIR="/home/vhorbato/Academy/IDS/snort3"
-SNORT_BIN="${SNORT_DIR}/build/src/snort"
-RULES_FILE="/home/vhorbato/Academy/rules_analysis_scripts/lsp_all_52449.rules"
-PLUGIN_PATH="/home/vhorbato/Academy/IDS/lightspd/modules/3.9.0.0/ubuntu-x64"
-CONFIG_FILE="/usr/local/etc/snort/snort.lua"
+SNORT_DIR="${SNORT_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
+SNORT_BIN="${SNORT_BIN:-${SNORT_DIR}/build/src/snort}"
+RULES_FILE="${RULES_FILE:-/home/vhorbato/Academy/rules_analysis_scripts/lsp_all_52449.rules}"
+PLUGIN_PATH="${PLUGIN_PATH:-/home/vhorbato/Academy/IDS/lightspd/modules/3.9.0.0/ubuntu-x64}"
+CONFIG_FILE="${CONFIG_FILE:-/usr/local/etc/snort/snort.lua}"
 
 PCAPS_DIR="${SCRIPT_DIR}/pcaps"
 EXPECTED_DIR="${SCRIPT_DIR}/expected"
-TMP_DIR="/tmp/neural_risk_test_run"
-
-mkdir -p "${TMP_DIR}"
+TMP_DIR="$(mktemp -d /tmp/neural_risk_test_run_XXXXXX)"
+trap 'rm -rf "${TMP_DIR}"' EXIT
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -33,10 +33,43 @@ echo -e "${BLUE}================================================================
 echo -e "${BLUE}   Snort 3 Rule-Group Neural Risk Integration Test Suite        ${NC}"
 echo -e "${BLUE}================================================================${NC}"
 
+FAILURES=0
+
+# ------------------------------------------------------------------------------
+# Check 0: Compile & Run Unit Tests
+# ------------------------------------------------------------------------------
+echo -e "\n${YELLOW}--- Running Check 0: Component Unit Tests ---${NC}"
+
+UNIT_BIN="${TMP_DIR}/neural_risk_unit_test"
+CATALOG_OBJ="${SNORT_DIR}/build/src/network_inspectors/neural_risk/CMakeFiles/neural_risk.dir/group_catalog.cc.o"
+
+if [ -f "${CATALOG_OBJ}" ]; then
+    g++ -std=c++17 -DHAVE_CONFIG_H \
+        -I"${SNORT_DIR}/build/src" \
+        -I"${SNORT_DIR}/src/network_inspectors" \
+        -I"${SNORT_DIR}/src" \
+        -I/usr/include/luajit-2.1 \
+        -I"${SNORT_DIR}/build" \
+        -I"${SNORT_DIR}" \
+        -I/usr/local/include/hs \
+        -I/usr/include/safeclib \
+        -I/usr/include/uuid \
+        -o "${UNIT_BIN}" \
+        "${SCRIPT_DIR}/test_unit.cc" \
+        "${CATALOG_OBJ}"
+
+    if "${UNIT_BIN}"; then
+        echo -e "  [PASS] All component unit tests passed"
+    else
+        echo -e "  ${RED}[FAIL] Component unit tests failed${NC}"
+        FAILURES=$((FAILURES + 1))
+    fi
+else
+    echo -e "  ${YELLOW}[WARN] group_catalog.o not found; skipping binary unit tests${NC}"
+fi
+
 # Ensure fixtures are up to date
 python3 "${SCRIPT_DIR}/generate_fixtures.py" "${PCAPS_DIR}"
-
-FAILURES=0
 
 # ------------------------------------------------------------------------------
 # Check 1: Golden diff for T1-T7
@@ -53,22 +86,24 @@ declare -A PCAP_MAP=(
     ["T7"]="T7_sip_control.pcap"
 )
 
+TEST_LOG="${TMP_DIR}/nr_test.jsonl"
+
 for T in T1 T2 T3 T4 T5 T6 T7; do
     PCAP="${PCAPS_DIR}/${PCAP_MAP[$T]}"
     OUT="${TMP_DIR}/${T}_actual.jsonl"
     EXP="${EXPECTED_DIR}/${T}.jsonl"
-    rm -f /tmp/nr_test.jsonl
+    rm -f "${TEST_LOG}"
 
     ${SNORT_BIN} \
         --plugin-path "${PLUGIN_PATH}" \
         -c "${CONFIG_FILE}" \
+        --lua "dofile('${SCRIPT_DIR}/test_normal.lua'); neural_risk.log_file = '${TEST_LOG}'" \
         -R "${RULES_FILE}" \
         -r "${PCAP}" \
-        --lua "dofile('${SCRIPT_DIR}/test_normal.lua')" \
         -q -k none > "${TMP_DIR}/${T}_snort.log" 2>&1
 
-    if [ -f /tmp/nr_test.jsonl ]; then
-        mv /tmp/nr_test.jsonl "${OUT}"
+    if [ -f "${TEST_LOG}" ]; then
+        mv "${TEST_LOG}" "${OUT}"
     else
         touch "${OUT}"
     fi
@@ -87,22 +122,21 @@ done
 # ------------------------------------------------------------------------------
 echo -e "\n${YELLOW}--- Running Check 2: Binding-swap diff (A <-> B) ---${NC}"
 
-SWAP_PASS=true
 for T in T1 T2 T3 T4 T5 T6; do
     PCAP="${PCAPS_DIR}/${PCAP_MAP[$T]}"
     SWAP_OUT="${TMP_DIR}/${T}_swap.jsonl"
-    rm -f /tmp/nr_test.jsonl
+    rm -f "${TEST_LOG}"
 
     ${SNORT_BIN} \
         --plugin-path "${PLUGIN_PATH}" \
         -c "${CONFIG_FILE}" \
+        --lua "dofile('${SCRIPT_DIR}/test_swap.lua'); neural_risk.log_file = '${TEST_LOG}'" \
         -R "${RULES_FILE}" \
         -r "${PCAP}" \
-        --lua "dofile('${SCRIPT_DIR}/test_swap.lua')" \
         -q -k none > "${TMP_DIR}/${T}_swap_snort.log" 2>&1
 
-    if [ -f /tmp/nr_test.jsonl ]; then
-        mv /tmp/nr_test.jsonl "${SWAP_OUT}"
+    if [ -f "${TEST_LOG}" ]; then
+        mv "${TEST_LOG}" "${SWAP_OUT}"
     else
         touch "${SWAP_OUT}"
     fi
@@ -158,21 +192,21 @@ diff -u "${TMP_DIR}/T6_actual.jsonl" "${TMP_DIR}/T6_swap.jsonl" || true
 # Check 3: Disabled test
 # ------------------------------------------------------------------------------
 echo -e "\n${YELLOW}--- Running Check 3: Disabled test ---${NC}"
-rm -f /tmp/nr_test.jsonl
+rm -f "${TEST_LOG}"
 
 ${SNORT_BIN} \
     --plugin-path "${PLUGIN_PATH}" \
     -c "${CONFIG_FILE}" \
+    --lua "dofile('${SCRIPT_DIR}/test_disabled.lua'); neural_risk.log_file = '${TEST_LOG}'" \
     -R "${RULES_FILE}" \
     -r "${PCAPS_DIR}/T1_log4j_alert.pcap" \
-    --lua "dofile('${SCRIPT_DIR}/test_disabled.lua')" \
     -q -k none > "${TMP_DIR}/disabled_snort.log" 2>&1
 
-if [ ! -f /tmp/nr_test.jsonl ] || [ ! -s /tmp/nr_test.jsonl ]; then
+if [ ! -f "${TEST_LOG}" ] || [ ! -s "${TEST_LOG}" ]; then
     echo -e "  [PASS] Disabled module emitted 0 JSONL lines"
 else
     echo -e "  ${RED}[FAIL] Disabled module emitted lines:${NC}"
-    cat /tmp/nr_test.jsonl
+    cat "${TEST_LOG}"
     FAILURES=$((FAILURES + 1))
 fi
 
@@ -184,9 +218,9 @@ echo -e "\n${YELLOW}--- Running Check 4: Invariants ---${NC}"
 ${SNORT_BIN} \
     --plugin-path "${PLUGIN_PATH}" \
     -c "${CONFIG_FILE}" \
+    --lua "dofile('${SCRIPT_DIR}/test_normal.lua'); neural_risk.log_file = '${TEST_LOG}'" \
     -R "${RULES_FILE}" \
     -r "${PCAPS_DIR}/T2_log4j_near_miss.pcap" \
-    --lua "dofile('${SCRIPT_DIR}/test_normal.lua')" \
     -k none > "${TMP_DIR}/t2_pegs.log" 2>&1
 
 NEAR_MISS=$(grep "near_miss:" "${TMP_DIR}/t2_pegs.log" | awk '{print $2}')
@@ -208,7 +242,7 @@ fi
 # ------------------------------------------------------------------------------
 echo -e "\n${BLUE}================================================================${NC}"
 if [ $FAILURES -eq 0 ]; then
-    echo -e "${GREEN}   ALL CHECKS PASSED (7 Fixtures, 4 Checks Green)               ${NC}"
+    echo -e "${GREEN}   ALL CHECKS PASSED (9 Unit Tests, 7 PCAPs, 4 Checks Green)    ${NC}"
     echo -e "${BLUE}================================================================${NC}"
     exit 0
 else

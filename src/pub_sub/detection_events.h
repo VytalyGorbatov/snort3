@@ -56,13 +56,11 @@ struct RuleGroupEvalRecord
 class RuleGroupEvalEvent : public DataEvent
 {
 public:
-    RuleGroupEvalEvent(Packet* p, const std::vector<RuleGroupEvalRecord>& recs,
-                       const std::vector<std::pair<uint32_t, uint32_t>>& ms)
-        : packet(p), records(recs), matched_sids(ms) {}
+    RuleGroupEvalEvent(Packet* p, const std::vector<RuleGroupEvalRecord>& recs)
+        : packet(p), records(recs) {}
 
     Packet* packet;
     const std::vector<RuleGroupEvalRecord>& records;
-    const std::vector<std::pair<uint32_t, uint32_t>>& matched_sids;
 };
 
 class IpsRuleEvent : public DataEvent, public Event

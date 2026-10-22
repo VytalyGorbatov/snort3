@@ -1,4 +1,6 @@
 -- Test configuration for neural_risk: normal binding
+alerts = { log_references = true }
+
 neural_risk_engine =
 {
     enabled = true,

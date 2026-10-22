@@ -1,4 +1,6 @@
 -- Test configuration for neural_risk: swapped binding (A <-> B)
+alerts = { log_references = true }
+
 neural_risk_engine =
 {
     enabled = true,

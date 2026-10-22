@@ -17,8 +17,10 @@
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <mutex>
 #include <set>
 #include <sstream>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -31,7 +33,9 @@
 #include "framework/data_bus.h"
 #include "framework/pig_pen.h"
 #include "log/messages.h"
+#include "main/snort_config.h"
 #include "main/thread.h"
+#include "managers/inspector_manager.h"
 #include "pub_sub/detection_events.h"
 #include "utils/util.h"
 
@@ -93,7 +97,50 @@ struct RootGroupInfo
     std::unordered_map<const GroupInfo*, std::vector<std::pair<uint32_t, uint32_t>>> group_to_sids;
 };
 
+static std::string escape_json(std::string_view s)
+{
+    std::string out;
+    out.reserve(s.size() + 8);
+    for (char c : s)
+    {
+        switch (c)
+        {
+        case '"':  out += "\\\""; break;
+        case '\\': out += "\\\\"; break;
+        case '\b': out += "\\b"; break;
+        case '\f': out += "\\f"; break;
+        case '\n': out += "\\n"; break;
+        case '\r': out += "\\r"; break;
+        case '\t': out += "\\t"; break;
+        default:
+            if (static_cast<unsigned char>(c) < 0x20)
+            {
+                char buf[8];
+                std::snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned char>(c));
+                out += buf;
+            }
+            else
+            {
+                out += c;
+            }
+            break;
+        }
+    }
+    return out;
+}
+
 static thread_local std::unordered_map<const detection_option_tree_root_t*, RootGroupInfo> tl_root_cache;
+static thread_local const SnortConfig* tl_cached_sc = nullptr;
+
+static void check_invalidate_root_cache()
+{
+    const SnortConfig* sc = SnortConfig::get_conf();
+    if (tl_cached_sc != sc)
+    {
+        tl_root_cache.clear();
+        tl_cached_sc = sc;
+    }
+}
 
 static void collect_leaf_otns(const detection_option_tree_bud_t* bud, std::vector<const OptTreeNode*>& otns)
 {
@@ -102,6 +149,9 @@ static void collect_leaf_otns(const detection_option_tree_bud_t* bud, std::vecto
 
     if (bud->otn)
         otns.push_back(bud->otn);
+
+    if (!bud->children)
+        return;
 
     for (int i = 0; i < bud->num_children; ++i)
     {
@@ -144,6 +194,7 @@ struct PacketDetectionState
 };
 
 static thread_local PacketDetectionState tl_packet_state;
+static std::mutex s_log_file_mutex;
 
 static void write_jsonl_log(const std::string& path_tmpl, const std::string& line)
 {
@@ -152,7 +203,7 @@ static void write_jsonl_log(const std::string& path_tmpl, const std::string& lin
 
     if (path_tmpl == "stdout")
     {
-        std::cout << line << std::endl;
+        LogMessage("%s\n", line.c_str());
         return;
     }
 
@@ -162,6 +213,8 @@ static void write_jsonl_log(const std::string& path_tmpl, const std::string& lin
     {
         path.replace(tid_pos, 5, std::to_string(get_instance_id()));
     }
+
+    std::lock_guard<std::mutex> lock(s_log_file_mutex);
 
     static thread_local std::ofstream tl_ofs;
     static thread_local std::string tl_cur_path;
@@ -233,6 +286,8 @@ public:
         uint64_t pkt_num = p->context ? p->context->packet_number : PigPen::get_packet_number();
         tl_packet_state.update_packet(pkt_num);
 
+        check_invalidate_root_cache();
+
         const GroupCatalog* cat = NeuralRiskEngine::get_catalog();
         if (!cat)
             return;
@@ -249,20 +304,7 @@ public:
         };
 
         std::map<const GroupInfo*, GroupActuation> actuated;
-
-        std::map<const GroupInfo*, std::vector<std::pair<uint32_t, uint32_t>>> packet_alerted_groups;
-        for (const auto& kv : tl_packet_state.alerted_groups)
-            packet_alerted_groups[kv.first] = kv.second;
-        for (const auto& ms : rge->matched_sids)
-        {
-            const GroupInfo* grp = cat->get_group(ms.first, ms.second);
-            if (grp)
-            {
-                auto& svec = packet_alerted_groups[grp];
-                if (std::find(svec.begin(), svec.end(), ms) == svec.end())
-                    svec.push_back(ms);
-            }
-        }
+        const auto& packet_alerted_groups = tl_packet_state.alerted_groups;
 
         // 1. Process all evaluation records from this packet
         for (const auto& rec : rge->records)
@@ -309,10 +351,11 @@ public:
                 auto& act = actuated[grp];
 
                 // If any rule of this group alerted on this packet, status is ALERT
-                if (packet_alerted_groups.find(grp) != packet_alerted_groups.end())
+                auto a_it = packet_alerted_groups.find(grp);
+                if (a_it != packet_alerted_groups.end())
                 {
                     act.status = GroupStatus::ALERT;
-                    act.sids = packet_alerted_groups[grp];
+                    act.sids = a_it->second;
                 }
                 else if (act.status != GroupStatus::ALERT)
                 {
@@ -375,9 +418,9 @@ public:
 
                     std::stringstream jline;
                     jline << "{\"pkt\":" << pkt_num
-                          << ",\"model\":\"" << model_name << "\""
+                          << ",\"model\":\"" << escape_json(model_name) << "\""
                           << ",\"status\":\"ALERT\""
-                          << ",\"group\":\"" << grp->canonical_id << "\""
+                          << ",\"group\":\"" << escape_json(grp->canonical_id) << "\""
                           << ",\"tier\":" << (unsigned)grp->tier
                           << ",\"alert_sids\":" << ss_sids.str() << "}";
 
@@ -437,7 +480,7 @@ public:
                     }
                 }
 
-                if (!buf_data && p->data && p->dsize > 0)
+                if (!buf_data && (buf_name == "pkt_data" || buf_name == "raw_data") && p->data && p->dsize > 0)
                 {
                     buf_data = p->data;
                     buf_len = p->dsize;
@@ -452,10 +495,14 @@ public:
                     req.gid = act.sids[0].first;
                     req.sid = act.sids[0].second;
                 }
+                req.sids = &act.sids;
                 req.buffer_name = buf_name;
                 req.buffer_data = buf_data;
                 req.buffer_len = buf_len;
                 req.dir = dir;
+                req.fpr_budget = bm->fpr_budget;
+                req.packet = p;
+                req.flow = p->flow;
 
                 RiskResult res = model->score(req);
 
@@ -474,14 +521,14 @@ public:
                 std::stringstream jline;
                 jline << std::fixed << std::setprecision(2);
                 jline << "{\"pkt\":" << pkt_num
-                      << ",\"model\":\"" << model_name << "\""
+                      << ",\"model\":\"" << escape_json(model_name) << "\""
                       << ",\"status\":\"NEAR_MISS\""
-                      << ",\"group\":\"" << grp->canonical_id << "\""
+                      << ",\"group\":\"" << escape_json(grp->canonical_id) << "\""
                       << ",\"tier\":" << (unsigned)grp->tier
                       << ",\"fp_sids\":" << ss_sids.str()
-                      << ",\"buffer\":\"" << buf_name << "\""
+                      << ",\"buffer\":\"" << escape_json(buf_name) << "\""
                       << ",\"len\":" << buf_len
-                      << ",\"dir\":\"" << dir << "\""
+                      << ",\"dir\":\"" << escape_json(dir) << "\""
                       << ",\"score\":" << res.score << "}";
 
                 write_jsonl_log(conf.log_file, jline.str());
@@ -496,7 +543,7 @@ public:
                                buf_name.c_str(), buf_len, dir.c_str(), res.score);
                 }
 
-                if (conf.alert && res.score >= 0.5f)
+                if (conf.alert && res.alert)
                 {
                     DetectionEngine::queue_event(NEURAL_RISK_GID, NEURAL_RISK_SID);
                 }
@@ -559,6 +606,13 @@ NeuralRiskInspector::NeuralRiskInspector(const NeuralRiskConfig& c)
 
 bool NeuralRiskInspector::configure(SnortConfig* sc)
 {
+    engine = static_cast<NeuralRiskEngine*>(InspectorManager::get_inspector(NEURAL_RISK_ENGINE_NAME, true, sc));
+    if (!engine)
+    {
+        ParseError("neural_risk requires %s to be configured in the global policy.", NEURAL_RISK_ENGINE_NAME);
+        return false;
+    }
+
     if (!config.log_file.empty() && config.log_file != "stdout")
     {
         std::string path = config.log_file;

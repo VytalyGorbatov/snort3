@@ -416,7 +416,11 @@ static void rule_tree_match(
             pmqs.non_qualified_events++;
 
         if ( rule_group_eval_enabled && context )
+        {
+            if ( context->rule_group_scratch.capacity() < 32 )
+                context->rule_group_scratch.reserve(32);
             context->rule_group_scratch.push_back({ root, pmx->pmd, eval_data.leaf_reached });
+        }
 
         if (eval_data.flowbit_failed)
             return;
@@ -1345,24 +1349,15 @@ void fp_complete(Packet* p, bool search)
         fpFinalSelectEvent(c->otnx, p);
         if ( rule_group_eval_enabled && !c->rule_group_scratch.empty() )
         {
-            std::vector<std::pair<uint32_t, uint32_t>> matched_sids;
-            if ( c->otnx && c->otnx->have_match )
-            {
-                const SnortConfig* sc = SnortConfig::get_conf();
-                for ( unsigned i = 0; i < sc->num_rule_types; i++ )
+            c->register_post_callback([](IpsContext* ctx) {
+                if ( rule_group_eval_enabled && ctx && !ctx->rule_group_scratch.empty() )
                 {
-                    MatchInfo* pmi = &c->otnx->matchInfo[i];
-                    for ( unsigned j = 0; j < pmi->iMatchCount; j++ )
-                    {
-                        const OptTreeNode* otn = pmi->MatchArray[j];
-                        if ( otn )
-                            matched_sids.push_back({ otn->sigInfo.gid, otn->sigInfo.sid });
-                    }
+                    Packet* pkt = ctx->packet;
+                    RuleGroupEvalEvent ev(pkt, ctx->rule_group_scratch);
+                    DataBus::publish(DetectionEngine::get_pub_id(), DetectionEventIds::RULE_GROUP_EVAL, ev, pkt ? pkt->flow : nullptr);
+                    ctx->rule_group_scratch.clear();
                 }
-            }
-            RuleGroupEvalEvent ev(p, c->rule_group_scratch, matched_sids);
-            DataBus::publish(DetectionEngine::get_pub_id(), DetectionEventIds::RULE_GROUP_EVAL, ev, p->flow);
-            c->rule_group_scratch.clear();
+            });
         }
         c->searches.items.clear();
     }

@@ -21,11 +21,12 @@
 #include "main/snort_config.h"
 #include "parser/parse_conf.h"
 #include "pub_sub/detection_events.h"
+#include <atomic>
 
 using namespace snort;
 using namespace neural_risk;
 
-static NeuralRiskEngine* s_engine = nullptr;
+static std::atomic<NeuralRiskEngine*> s_engine{nullptr};
 
 //--------------------------------------------------------------------------
 // Parameters
@@ -100,8 +101,11 @@ bool NeuralRiskEngineModule::begin(const char* fqn, int idx, SnortConfig* sc)
     return true;
 }
 
-bool NeuralRiskEngineModule::set(const char* fqn, Value& v, SnortConfig*)
+bool NeuralRiskEngineModule::set(const char* fqn, Value& v, SnortConfig* sc)
 {
+    if (sc)
+        sc->output_flags |= OUTPUT_FLAG__ALERT_REFS;
+
     if (v.is("enabled"))
         conf.enabled = v.get_bool();
     else if (v.is("hub_limit"))
@@ -172,19 +176,21 @@ bool NeuralRiskEngineModule::end(const char* fqn, int idx, SnortConfig*)
 NeuralRiskEngine::NeuralRiskEngine(const NeuralRiskEngineConfig& conf)
     : config(conf)
 {
-    s_engine = this;
+    s_engine.store(this);
 }
 
 const GroupCatalog* NeuralRiskEngine::get_catalog()
 {
-    return s_engine ? &s_engine->catalog : nullptr;
+    NeuralRiskEngine* eng = s_engine.load();
+    return eng ? &eng->catalog : nullptr;
 }
 
 const BoundModel* NeuralRiskEngine::get_binding(uint32_t group_id)
 {
-    if (!s_engine || group_id >= s_engine->group_bindings.size())
+    NeuralRiskEngine* eng = s_engine.load();
+    if (!eng || group_id >= eng->group_bindings.size())
         return nullptr;
-    return &s_engine->group_bindings[group_id];
+    return &eng->group_bindings[group_id];
 }
 
 bool NeuralRiskEngine::is_eval_enabled()
@@ -248,6 +254,13 @@ static bool group_matches_binding(const GroupInfo& grp, const WhenClause& when)
             return false;
     }
 
+    // Per integration plan: tier-1 groups span several buffers and classtypes,
+    // so they match only via cve, group, or a surface-only binding.
+    if (grp.tier == 1 && when.cve.empty() && when.group.empty() && (!when.buffer.empty() || !when.classtype.empty()))
+    {
+        return false;
+    }
+
     // Match buffer
     if (!when.buffer.empty())
     {
@@ -279,8 +292,16 @@ static bool group_matches_binding(const GroupInfo& grp, const WhenClause& when)
     // Match classtype
     if (!when.classtype.empty())
     {
-        std::string cls_token = "|" + when.classtype;
-        if (grp.canonical_id.find(cls_token) == std::string::npos)
+        bool has_class = false;
+        for (const auto* r : grp.members)
+        {
+            if (r->classtype == when.classtype)
+            {
+                has_class = true;
+                break;
+            }
+        }
+        if (!has_class)
             return false;
     }
 
@@ -420,8 +441,19 @@ static Inspector* engine_ctor(Module* m)
 
 static void engine_dtor(Inspector* p)
 {
+    if (s_engine.load() == static_cast<NeuralRiskEngine*>(p))
+        s_engine.store(nullptr);
     delete p;
-    s_engine = nullptr;
+}
+
+static void engine_tinit()
+{
+    // Seam for per-thread model runtime initialization (Phase 6/7)
+}
+
+static void engine_tterm()
+{
+    // Seam for per-thread model runtime cleanup (Phase 6/7)
 }
 
 static const InspectApi neural_risk_engine_api =
@@ -444,8 +476,8 @@ static const InspectApi neural_risk_engine_api =
     nullptr, // service
     nullptr, // pinit
     nullptr, // pterm
-    nullptr, // tinit
-    nullptr, // tterm
+    engine_tinit,
+    engine_tterm,
     engine_ctor,
     engine_dtor,
     nullptr, // ssn

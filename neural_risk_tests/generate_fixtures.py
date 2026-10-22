@@ -181,5 +181,5 @@ def generate_all(out_dir: str):
 
 if __name__ == "__main__":
     import sys
-    out_dir = sys.argv[1] if len(sys.argv) > 1 else "/home/vhorbato/Academy/IDS/neural_risk_tests/pcaps"
+    out_dir = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(os.path.abspath(__file__)), "pcaps")
     generate_all(out_dir)

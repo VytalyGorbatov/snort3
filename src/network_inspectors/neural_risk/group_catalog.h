@@ -65,11 +65,20 @@ class GroupCatalog
 {
 public:
     GroupCatalog() = default;
+    GroupCatalog(const GroupCatalog&) = delete;
+    GroupCatalog& operator=(const GroupCatalog&) = delete;
+    GroupCatalog(GroupCatalog&&) noexcept = default;
+    GroupCatalog& operator=(GroupCatalog&&) noexcept = default;
 
     bool build(const snort::SnortConfig* sc,
                unsigned hub_limit = 50,
                unsigned min_size = 10,
                unsigned max_size = 500);
+
+    bool build_from_rules(std::vector<RuleFeatures>&& rules_in,
+                          unsigned hub_limit = 50,
+                          unsigned min_size = 10,
+                          unsigned max_size = 500);
 
     bool dump_tsv(const std::string& path) const;
 
